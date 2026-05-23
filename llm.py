@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -65,6 +66,34 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _extract_object_fragment(text: str) -> str:
+    text = (text or "").strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1].strip()
+    return text
+
+
+def _load_object(text: str) -> dict[str, Any] | None:
+    candidates = [_strip_code_fences(text)]
+    fragment = _extract_object_fragment(text)
+    if fragment not in candidates:
+        candidates.append(fragment)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        for loader in (json.loads, ast.literal_eval):
+            try:
+                payload = loader(candidate)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                return payload
+    return None
+
+
 def _clean_generated_text(text: str) -> str:
     text = _strip_code_fences(text)
     text = re.sub(r"^[\s\-•*0-9.)]+", "", text).strip()
@@ -93,16 +122,20 @@ def build_system_prompt(user: dict[str, Any], inventory: list[str]) -> str:
 Сумка бесконечная: если вы находите, получаете, забираете или вам дарят предмет, он просто появляется в инвентаре.
 
 Ты живой человек в этом мире, а не ассистент и не ИИ.
-Говори естественно, эмоционально, коротко: 2-4 предложения.
+Говори естественно, тепло и чуть по-человечески неровно, как реальный спутник в дороге.
+Пиши 1-2 коротких абзаца, обычно 3-6 предложений.
 Всегда вплетай в ответ описание окружения: что видно, слышно, чувствуется.
 Реагируй на действия {player_name}.
 Если голод ниже 30, заметь это и предложи поесть.
-Иногда предлагай простые действия по ситуации.
+Иногда предлагай простые действия по ситуации и мягко подталкивай историю вперёд.
+Можешь чуть шутить, спорить, смущаться, флиртовать или упрямиться, если это в характере.
 Не придумывай отдельный каталог товаров; предметы попадают в сумку прямо по ходу сцены.
 Если появляется новое место, предмет или важная деталь, сам дай короткое и яркое описание для него.
 Всегда заполняй поля new_location_description и new_item_description, когда там есть что описать.
 Всегда заполняй scene_image_prompt и item_image_prompt, чтобы бот мог автоматически сгенерировать картинку без вопросов к пользователю.
 Никогда не ломай четвёртую стену, не говори про игру и не используй слово "игрок".
+Не отвечай сухо и не заканчивай каждую реплику одинаково.
+Если уместно, задай один естественный вопрос в конце, чтобы разговор звучал живо, а не формально.
 
 Верни только JSON-объект с полями scene, dialogue, new_location, new_item, new_location_description, new_item_description, scene_image_prompt, item_image_prompt.
 Если нового места или предмета нет, оставь соответствующие поля пустыми строками."""
@@ -182,12 +215,8 @@ def _parse_fallback(text: str, companion_name: str) -> SceneReply:
 
 def parse_scene_reply(raw_text: str, companion_name: str) -> SceneReply:
     text = _strip_code_fences(raw_text)
-    try:
-        payload = json.loads(text)
-    except Exception:
-        return _parse_fallback(text, companion_name)
-
-    if not isinstance(payload, dict):
+    payload = _load_object(text)
+    if payload is None:
         return _parse_fallback(text, companion_name)
 
     scene = _clean(payload.get("scene") or payload.get("narrator") or payload.get("description"))
@@ -340,7 +369,7 @@ class LLMService:
         return await self.generate(
             user,
             history,
-            "Начни первую сцену: коротко, ярко, с атмосферой и первым движением сюжета.",
+            "Начни первую сцену: живо, по-человечески, с характером, атмосферой и естественным первым вопросом спутника.",
             inventory,
         )
 

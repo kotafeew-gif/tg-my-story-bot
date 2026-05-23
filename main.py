@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+from html import escape
 import logging
 import re
 import random
@@ -199,6 +200,17 @@ def item_caption(reply_item_description: str, item_name: str) -> str:
     if reply_item_description:
         return reply_item_description
     return f"Новый предмет: {item_name}"
+
+
+def render_story_plain(scene: str, dialogue: str, companion_name: str) -> str:
+    return f"{scene}\n\n{companion_name}: {dialogue}"
+
+
+def render_story_html(scene: str, dialogue: str, companion_name: str) -> str:
+    return (
+        f"<blockquote><i>{escape(scene)}</i></blockquote>\n\n"
+        f"<b>{escape(companion_name)}:</b> {escape(dialogue)}"
+    )
 
 
 MALE_NAME_FALLBACKS = ["Артём", "Илья", "Макс", "Никита", "Данил"]
@@ -577,14 +589,15 @@ async def start_game(message: Message, db: GameDatabase, llm: LLMService, user: 
         fresh_user = await db.get_user(message.from_user.id)
         inventory = await db.get_inventory(message.from_user.id)
         opening = await llm.generate_opening(fresh_user, [], inventory)
-        rendered = f"Рассказчик: {opening.scene}\n\n{fresh_user['companion_name']}: {opening.dialogue}"
-        await db.add_message(message.from_user.id, "assistant", rendered)
+        rendered_plain = render_story_plain(opening.scene, opening.dialogue, fresh_user["companion_name"])
+        rendered_html = render_story_html(opening.scene, opening.dialogue, fresh_user["companion_name"])
+        await db.add_message(message.from_user.id, "assistant", rendered_plain)
         await db.update_user(
             message.from_user.id,
             last_scene_description=opening.scene,
             current_location=short_location(opening.new_location or fresh_user["setting"]),
         )
-        await message.answer(rendered, reply_markup=main_keyboard())
+        await message.answer(rendered_html, reply_markup=main_keyboard(), parse_mode="HTML")
 
         scene_anchor = opening.new_location or opening.scene or fresh_user["setting"]
         if scene_anchor:
@@ -629,8 +642,9 @@ async def handle_story(message: Message, db: GameDatabase, llm: LLMService, user
         fresh_user = await db.get_user(message.from_user.id)
         inventory = await db.get_inventory(message.from_user.id)
         reply = await llm.generate(fresh_user, history[:-1], user_text, inventory)
-        rendered = f"Рассказчик: {reply.scene}\n\n{fresh_user['companion_name']}: {reply.dialogue}"
-        await db.add_message(message.from_user.id, "assistant", rendered)
+        rendered_plain = render_story_plain(reply.scene, reply.dialogue, fresh_user["companion_name"])
+        rendered_html = render_story_html(reply.scene, reply.dialogue, fresh_user["companion_name"])
+        await db.add_message(message.from_user.id, "assistant", rendered_plain)
 
         current_location = short_location(fresh_user.get("current_location") or fresh_user.get("setting") or "")
         next_location = short_location(reply.new_location) if reply.new_location else current_location
@@ -639,7 +653,7 @@ async def handle_story(message: Message, db: GameDatabase, llm: LLMService, user
             last_scene_description=reply.scene,
             current_location=next_location,
         )
-        await message.answer(rendered, reply_markup=main_keyboard())
+        await message.answer(rendered_html, reply_markup=main_keyboard(), parse_mode="HTML")
 
         if reply.new_location and normalize(reply.new_location) != normalize(current_location):
             await send_scene_art(
