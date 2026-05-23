@@ -94,6 +94,23 @@ def _load_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _extract_quoted_field(text: str, field: str) -> str:
+    patterns = [
+        rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+        rf"'{re.escape(field)}'\s*:\s*'((?:\\.|[^'\\])*)'",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        raw_value = match.group(1)
+        try:
+            return json.loads(f'"{raw_value}"')
+        except Exception:
+            return raw_value.replace("\n", " ").strip()
+    return ""
+
+
 def _clean_generated_text(text: str) -> str:
     text = _strip_code_fences(text)
     text = re.sub(r"^[\s\-•*0-9.)]+", "", text).strip()
@@ -217,6 +234,34 @@ def parse_scene_reply(raw_text: str, companion_name: str) -> SceneReply:
     text = _strip_code_fences(raw_text)
     payload = _load_object(text)
     if payload is None:
+        scene = _clean(_extract_quoted_field(text, "scene"))
+        dialogue = _clean(_extract_quoted_field(text, "dialogue"))
+        new_location = _clean(_extract_quoted_field(text, "new_location"))
+        new_item = _clean(_extract_quoted_field(text, "new_item"))
+        new_location_description = _clean(_extract_quoted_field(text, "new_location_description"))
+        new_item_description = _clean(_extract_quoted_field(text, "new_item_description"))
+        scene_image_prompt = _clean(_extract_quoted_field(text, "scene_image_prompt"))
+        item_image_prompt = _clean(_extract_quoted_field(text, "item_image_prompt"))
+        if scene and dialogue:
+            if not new_location_description and new_location:
+                new_location_description = scene or new_location
+            if not new_item_description and new_item:
+                new_item_description = new_item
+            if not scene_image_prompt:
+                scene_image_prompt = scene
+            if not item_image_prompt:
+                item_image_prompt = new_item_description or new_item
+            return SceneReply(
+                scene=scene,
+                dialogue=dialogue,
+                raw=text,
+                new_location=new_location,
+                new_item=new_item,
+                new_location_description=new_location_description,
+                new_item_description=new_item_description,
+                scene_image_prompt=scene_image_prompt,
+                item_image_prompt=item_image_prompt,
+            )
         return _parse_fallback(text, companion_name)
 
     scene = _clean(payload.get("scene") or payload.get("narrator") or payload.get("description"))
