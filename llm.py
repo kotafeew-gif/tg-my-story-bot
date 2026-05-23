@@ -2,6 +2,7 @@
 
 import ast
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -335,6 +336,95 @@ def _to_contents(history: list[dict[str, str]], user_text: str) -> list[types.Co
     return contents
 
 
+def _build_plaintext_fallback_prompt(
+    user: dict[str, Any],
+    history: list[dict[str, str]],
+    user_text: str,
+    inventory: list[str],
+) -> str:
+    companion_name = user.get("companion_name", "Спутник")
+    player_name = user.get("player_name", "путник")
+    setting = user.get("setting", "")
+    current_location = user.get("current_location") or setting or "неизвестно"
+    personality = user.get("companion_personality", "")
+    appearance = user.get("companion_appearance", "")
+    companion_gender = user.get("companion_gender", "не указан")
+    hunger = int(user.get("hunger", 100))
+    inventory_text = ", ".join(inventory) if inventory else "пусто"
+
+    recent_dialogue: list[str] = []
+    for item in history[-6:]:
+        content = (item.get("content") or "").strip()
+        if content:
+            recent_dialogue.append(content)
+    history_text = "\n".join(recent_dialogue) if recent_dialogue else "история только начинается"
+
+    return f"""Ты — {companion_name}. {personality}
+Пол/образ: {companion_gender}
+Внешность: {appearance}
+Вы с {player_name} находитесь здесь: {setting}
+Текущее место: {current_location}
+Голод {player_name}: {hunger}/100
+Инвентарь: {inventory_text}
+
+Последние реплики:
+{history_text}
+
+Реплика пользователя:
+{user_text}
+
+Верни ТОЛЬКО текст в таком формате:
+Рассказчик: 2-4 коротких предложения о сцене и окружении.
+Собеседник: 2-4 коротких предложения ответа в характере.
+Локация: новое место или пустая строка.
+Предмет: новый предмет или пустая строка.
+Описание локации: краткое описание нового места или пустая строка.
+Описание предмета: краткое описание предмета или пустая строка.
+Промпт сцены: короткий английский prompt для картинки сцены или пустая строка.
+Промпт предмета: короткий английский prompt для картинки предмета или пустая строка.
+
+Если ничего нового не появилось, оставь соответствующие поля пустыми.
+Не используй JSON, не добавляй список, не пиши ничего лишнего."""
+
+
+def _local_fallback_reply(user: dict[str, Any], user_text: str, inventory: list[str]) -> SceneReply:
+    companion_name = user.get("companion_name", "Спутник")
+    player_name = user.get("player_name", "путник")
+    setting = user.get("setting", "")
+    current_location = user.get("current_location") or setting or "тихий вагон"
+    hunger = int(user.get("hunger", 100))
+    inventory_text = ", ".join(inventory) if inventory else "пусто"
+    text = (user_text or "").lower()
+
+    if any(word in text for word in ("спать", "сон", "высп", "дрем")):
+        scene = f"В {current_location} стало особенно тихо: за окном мерно плывёт темнота, а шум дороги будто укачивает."
+        dialogue = "Я бы, честно, ещё чуть-чуть подождал(а), но если тебя уже клонит в сон, то можем и притихнуть. Только не усни совсем, ладно?"
+    elif any(word in text for word in ("ехать", "поехать", "идти", "двиг", "путь", "дорог")):
+        scene = f"В {current_location} всё ещё чувствуется движение: вокруг дрожит воздух, и история сама тянет вас дальше."
+        dialogue = "Я за то, чтобы ехать дальше. Не люблю, когда дорога сама себя не досказывает."
+    elif "каф" in text or "коф" in text:
+        scene = f"В {current_location} витает тёплый запах, будто рядом совсем скоро найдётся место, где можно выдохнуть."
+        dialogue = "Кофе я бы сейчас не отказался(ась) взять. Если рядом есть остановка, давай заглянем."
+    else:
+        scene = f"В {current_location} всё остаётся живым и немного непредсказуемым, как бывает в дороге с {player_name}."
+        dialogue = "Я слышу тебя. Давай так и сделаем, только по-своему и без лишней спешки."
+
+    if hunger < 30:
+        dialogue += " И да, ты уже заметно голоден, так что я бы не тянул(а) с едой."
+
+    return SceneReply(
+        scene=_clean(scene),
+        dialogue=_clean(dialogue),
+        raw="",
+        new_location="",
+        new_item="",
+        new_location_description="",
+        new_item_description="",
+        scene_image_prompt=_clean(f"Illustration of {setting or current_location}, atmospheric scene, no text, cinematic lighting."),
+        item_image_prompt=_clean(inventory_text if inventory_text != "пусто" else "small mysterious travel item, atmospheric close-up, no text"),
+    )
+
+
 class LLMService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -378,37 +468,56 @@ class LLMService:
         return _clean_generated_text(text)
 
     async def generate(self, user: dict[str, Any], history: list[dict[str, str]], user_text: str, inventory: list[str]) -> SceneReply:
-        client = self._require_client()
+        client = self._client
+        if client is None:
+            return _local_fallback_reply(user, user_text, inventory)
+
         system_prompt = build_system_prompt(user, inventory)
         contents = _to_contents(history, user_text)
-        response = await client.aio.models.generate_content(
-            model=self.settings.gemini_text_model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=self.settings.temperature,
+        raw_text = ""
+        try:
+            response = await client.aio.models.generate_content(
+                model=self.settings.gemini_text_model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=self.settings.temperature,
+                    max_output_tokens=self.settings.max_tokens,
+                    response_mime_type="application/json",
+                    response_json_schema=SCENE_SCHEMA,
+                ),
+            )
+            raw_text = (getattr(response, "text", "") or "").strip()
+            if not raw_text:
+                parts: list[str] = []
+                for candidate in getattr(response, "candidates", None) or []:
+                    content = getattr(candidate, "content", None)
+                    if not content:
+                        continue
+                    for part in getattr(content, "parts", None) or []:
+                        if getattr(part, "text", None):
+                            parts.append(part.text)
+                raw_text = "\n".join(parts).strip()
+        except Exception:
+            logging.exception("Structured Gemini response failed, falling back to plain text")
+
+        if raw_text:
+            try:
+                return parse_scene_reply(raw_text, user.get("companion_name", "Спутник"))
+            except Exception:
+                logging.exception("Structured reply parse failed, falling back to plain text")
+
+        try:
+            fallback_prompt = _build_plaintext_fallback_prompt(user, history, user_text, inventory)
+            raw_text = await self.generate_text(
+                fallback_prompt,
                 max_output_tokens=self.settings.max_tokens,
-                response_mime_type="application/json",
-                response_json_schema=SCENE_SCHEMA,
-            ),
-        )
-
-        raw_text = (getattr(response, "text", "") or "").strip()
-        if not raw_text:
-            parts: list[str] = []
-            for candidate in getattr(response, "candidates", None) or []:
-                content = getattr(candidate, "content", None)
-                if not content:
-                    continue
-                for part in getattr(content, "parts", None) or []:
-                    if getattr(part, "text", None):
-                        parts.append(part.text)
-            raw_text = "\n".join(parts).strip()
-
-        if not raw_text:
-            raise LLMError("Empty Gemini response")
-
-        return parse_scene_reply(raw_text, user.get("companion_name", "Спутник"))
+                temperature=self.settings.temperature,
+            )
+            return parse_scene_reply(raw_text, user.get("companion_name", "Спутник"))
+        except Exception:
+            logging.exception("Plain text fallback failed")
+            return _local_fallback_reply(user, user_text, inventory)
 
     async def generate_opening(self, user: dict[str, Any], history: list[dict[str, str]], inventory: list[str]) -> SceneReply:
         return await self.generate(
