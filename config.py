@@ -34,8 +34,11 @@ def load_settings() -> Settings:
         load_dotenv(base_dir / ".env")
 
     gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+    render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
     space_host = os.getenv("SPACE_HOST", "").strip()
     webhook_base_url = os.getenv("WEBHOOK_BASE_URL", "").strip()
+    if not webhook_base_url and render_external_url:
+        webhook_base_url = render_external_url
     if not webhook_base_url and space_host:
         webhook_base_url = f"https://{space_host}"
 
