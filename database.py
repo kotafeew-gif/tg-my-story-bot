@@ -63,7 +63,13 @@ class GameDatabase:
                 state TEXT DEFAULT 'new',
                 player_name TEXT DEFAULT '',
                 companion_name TEXT DEFAULT '',
+                companion_gender TEXT DEFAULT '',
+                companion_name_mode TEXT DEFAULT '',
+                companion_personality_mode TEXT DEFAULT '',
+                companion_appearance TEXT DEFAULT '',
+                companion_appearance_mode TEXT DEFAULT '',
                 setting TEXT DEFAULT '',
+                setting_mode TEXT DEFAULT '',
                 companion_personality TEXT DEFAULT '',
                 hunger INTEGER DEFAULT 100,
                 inventory TEXT DEFAULT '[]',
@@ -71,7 +77,8 @@ class GameDatabase:
                 system_prompt TEXT DEFAULT '',
                 last_scene_description TEXT DEFAULT '',
                 bot_turns INTEGER DEFAULT 0,
-                game_over INTEGER DEFAULT 0
+                game_over INTEGER DEFAULT 0,
+                pending_action TEXT DEFAULT ''
             )
             """
         )
@@ -96,7 +103,28 @@ class GameDatabase:
             """
         )
         await self.conn.commit()
+        await self.ensure_user_columns()
         await self.seed_items()
+
+    async def ensure_user_columns(self) -> None:
+        assert self.conn is not None
+        columns = [
+            ("companion_gender", "TEXT DEFAULT ''"),
+            ("companion_name_mode", "TEXT DEFAULT ''"),
+            ("companion_personality_mode", "TEXT DEFAULT ''"),
+            ("companion_appearance", "TEXT DEFAULT ''"),
+            ("companion_appearance_mode", "TEXT DEFAULT ''"),
+            ("setting_mode", "TEXT DEFAULT ''"),
+            ("pending_action", "TEXT DEFAULT ''"),
+        ]
+        async with self.conn.execute("PRAGMA table_info(users)") as cursor:
+            rows = await cursor.fetchall()
+        existing = {row[1] for row in rows}
+        for column, definition in columns:
+            if column in existing:
+                continue
+            await self.conn.execute(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+        await self.conn.commit()
 
     async def seed_items(self) -> None:
         assert self.conn is not None
@@ -115,11 +143,13 @@ class GameDatabase:
         await self.conn.execute(
             """
             INSERT OR IGNORE INTO users (
-                user_id, state, player_name, companion_name, setting,
-                companion_personality, hunger, inventory, current_location,
-                system_prompt, last_scene_description, bot_turns, game_over
+                user_id, state, player_name, companion_name, companion_gender,
+                companion_name_mode, companion_personality_mode, companion_appearance,
+                companion_appearance_mode, setting, setting_mode, companion_personality,
+                hunger, inventory, current_location, system_prompt, last_scene_description,
+                bot_turns, game_over, pending_action
             )
-            VALUES (?, 'new', '', '', '', '', 100, '[]', '', '', '', 0, 0)
+            VALUES (?, 'new', '', '', '', '', '', '', '', '', '', '', 100, '[]', '', '', '', 0, 0, '')
             """,
             (user_id,),
         )
@@ -140,7 +170,13 @@ class GameDatabase:
             "state",
             "player_name",
             "companion_name",
+            "companion_gender",
+            "companion_name_mode",
+            "companion_personality_mode",
+            "companion_appearance",
+            "companion_appearance_mode",
             "setting",
+            "setting_mode",
             "companion_personality",
             "hunger",
             "inventory",
@@ -149,6 +185,7 @@ class GameDatabase:
             "last_scene_description",
             "bot_turns",
             "game_over",
+            "pending_action",
         }
         invalid = set(fields) - allowed
         if invalid:
@@ -165,7 +202,13 @@ class GameDatabase:
             state="new",
             player_name="",
             companion_name="",
+            companion_gender="",
+            companion_name_mode="",
+            companion_personality_mode="",
+            companion_appearance="",
+            companion_appearance_mode="",
             setting="",
+            setting_mode="",
             companion_personality="",
             hunger=100,
             inventory="[]",
@@ -174,6 +217,7 @@ class GameDatabase:
             last_scene_description="",
             bot_turns=0,
             game_over=0,
+            pending_action="",
         )
 
     async def add_message(self, user_id: int, role: str, content: str) -> None:

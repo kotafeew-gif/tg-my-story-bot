@@ -65,16 +65,27 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _clean_generated_text(text: str) -> str:
+    text = _strip_code_fences(text)
+    text = re.sub(r"^[\s\-•*0-9.)]+", "", text).strip()
+    text = text.strip(" \t\r\n\"'«»")
+    return " ".join(text.split())
+
+
 def build_system_prompt(user: dict[str, Any], inventory: list[str]) -> str:
     inventory_text = ", ".join(inventory) if inventory else "пусто"
     current_location = user.get("current_location") or user.get("setting") or "неизвестно"
     hunger = int(user.get("hunger", 100))
     companion_name = user.get("companion_name", "Спутник")
+    companion_gender = user.get("companion_gender", "не указан")
     player_name = user.get("player_name", "путник")
     setting = user.get("setting", "")
     personality = user.get("companion_personality", "")
+    appearance = user.get("companion_appearance", "")
 
     return f"""Ты — {companion_name}. {personality}
+Пол/образ: {companion_gender}
+Внешность: {appearance}
 Вы с {player_name} находитесь здесь: {setting}
 Текущее место: {current_location}
 Голод {player_name}: {hunger}/100
@@ -266,6 +277,31 @@ class LLMService:
     async def aclose(self) -> None:
         if self._client is not None:
             await self._client.aio.aclose()
+
+    async def generate_text(self, prompt: str, *, max_output_tokens: int = 128, temperature: float | None = None) -> str:
+        client = self._require_client()
+        response = await client.aio.models.generate_content(
+            model=self.settings.gemini_text_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=self.settings.temperature if temperature is None else temperature,
+                max_output_tokens=max_output_tokens,
+            ),
+        )
+        text = (getattr(response, "text", "") or "").strip()
+        if not text:
+            parts: list[str] = []
+            for candidate in getattr(response, "candidates", None) or []:
+                content = getattr(candidate, "content", None)
+                if not content:
+                    continue
+                for part in getattr(content, "parts", None) or []:
+                    if getattr(part, "text", None):
+                        parts.append(part.text)
+            text = "\n".join(parts).strip()
+        if not text:
+            raise LLMError("Empty Gemini response")
+        return _clean_generated_text(text)
 
     async def generate(self, user: dict[str, Any], history: list[dict[str, str]], user_text: str, inventory: list[str]) -> SceneReply:
         client = self._require_client()

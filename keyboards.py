@@ -39,6 +39,25 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def gender_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👨 Мужской"), KeyboardButton(text="👩 Женский")],
+            [KeyboardButton(text="🌀 Нейтральный")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def auto_manual_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🎲 Придумай сам"), KeyboardButton(text="✍️ Я сам")]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 def confirm_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="да"), KeyboardButton(text="заново")]],
