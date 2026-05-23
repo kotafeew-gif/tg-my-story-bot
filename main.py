@@ -132,6 +132,18 @@ def get_creation_stage(user: dict[str, object]) -> str:
     return "confirm"
 
 
+def is_creation_complete(user: dict[str, object]) -> bool:
+    required_fields = (
+        "player_name",
+        "companion_gender",
+        "companion_name",
+        "companion_personality",
+        "companion_appearance",
+        "setting",
+    )
+    return all(str(user.get(field) or "").strip() for field in required_fields)
+
+
 def render_inventory(inventory: list[str]) -> str:
     if not inventory:
         return "🎒 Бесконечная сумка пуста."
@@ -731,11 +743,15 @@ async def handle_eat(message: Message, db: GameDatabase) -> None:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, db: GameDatabase) -> None:
+async def cmd_start(message: Message, db: GameDatabase, llm: LLMService) -> None:
     user = await db.ensure_user(message.from_user.id)
     if int(user.get("game_over", 0)):
         await db.reset_user(message.from_user.id)
         user = await db.ensure_user(message.from_user.id)
+
+    if is_creation_complete(user) and user["state"] != "playing":
+        await start_game(message, db, llm, user)
+        return
 
     if user["state"] == "creating" or not user["player_name"]:
         await db.update_user(message.from_user.id, state="creating")
@@ -827,6 +843,11 @@ async def handle_text(message: Message, db: GameDatabase, llm: LLMService) -> No
             return
 
         await handle_story(message, db, llm, user)
+        return
+
+    if is_creation_complete(user):
+        await message.answer("Мир уже готов, продолжаем.", reply_markup=main_keyboard())
+        await start_game(message, db, llm, user)
         return
 
     await message.answer("Напиши /start, чтобы начать новую историю.", reply_markup=main_keyboard())
